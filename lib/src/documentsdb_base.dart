@@ -1001,7 +1001,7 @@ class DocumentsDB {
       _onInsert?.close();
       _onUpdate?.close();
       _onRemove?.close();
-      await _writer.close();
+      await _writer?.close();
     });
   }
 }
