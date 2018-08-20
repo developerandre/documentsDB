@@ -23,8 +23,13 @@ class DocumentsDB {
   Meta _meta = Meta(1);
   final String _signature = '\$documentsdb';
   final Map<dynamic, StreamController> _streams = {};
-
-  DocumentsDB(this.path) {
+  final StreamController _onInsert = StreamController();
+  final StreamController _onUpdate = StreamController();
+  final StreamController _onRemove = StreamController();
+  final bool timestampData;
+  final bool inMemoryOnly;
+  DocumentsDB(this.path,
+      {this.timestampData = false, this.inMemoryOnly = false}) {
     this._file = File(this.path);
 
     Op.values.forEach((Op op) {
@@ -54,7 +59,7 @@ class DocumentsDB {
   }
 
   /// Opens flat file database
-  Future<DocumentsDB> open([bool tidy = true]) {
+  Future<DocumentsDB> open([bool tidy = false]) {
     return this._executionQueue.add<DocumentsDB>(() => this._open(tidy));
   }
 
@@ -96,6 +101,7 @@ class DocumentsDB {
                   Meta.fromMap(json.decode(line.substring(_signature.length)));
             } catch (e) {
               // no valid meta -> default meta
+              print(e);
             }
             return;
           }
@@ -104,6 +110,7 @@ class DocumentsDB {
           this._fromFile(line);
         } catch (e) {
           // skip invalid line
+          print(e);
         }
       }
     });
@@ -115,7 +122,7 @@ class DocumentsDB {
     this._file = File(this.path);
     IOSink writer = this._file.openWrite();
     writer.writeln(_signature + this._meta.toString());
-    writer.writeAll(this._data.map((data) => json.encode(data)), '\n');
+    writer.writeAll(this._dbData.map((data) => json.encode(data)), '\n');
     writer.write('\n');
     await writer.flush();
     await writer.close();
@@ -152,7 +159,9 @@ class DocumentsDB {
             break;
           }
       }
-    } catch (e) {}
+    } catch (e) {
+      print(e);
+    }
   }
 
   Function _match(query, [Op op = Op.and]) {
@@ -161,14 +170,12 @@ class DocumentsDB {
       for (dynamic i in query.keys) {
         if (i is Op) {
           bool match = this._match(query[i], i)(test);
+
           if (op == Op.and && match) continue;
           if (op == Op.and && !match) return false;
 
           if (op == Op.or && !match) continue;
           if (op == Op.or && match) return true;
-
-          if (op == Op.exists && match) continue;
-          if (op == Op.exists && !match) return false;
 
           return Op.not == op ? !match : match;
         }
@@ -187,9 +194,22 @@ class DocumentsDB {
             o = o.toString().replaceAllMapped(
                 RegExp(r"\[(\-?[0-9]+)\]"), (Match m) => "${m[1]}");
           }
+
           if (!(testVal is List<dynamic>)) {
             if (!(testVal is Map<dynamic, dynamic>) ||
                 !testVal.containsKey(o)) {
+              if (op == Op.exists) {
+                bool statement;
+                if (testVal is Map<dynamic, dynamic>)
+                  statement = testVal.containsKey(o);
+                else if (testVal is List<dynamic>)
+                  statement = testVal.contains(o);
+                if (statement != null) {
+                  if ((query[i] == true && testVal != null && statement) ||
+                      (query[i] == false && (testVal == null || !statement)))
+                    continue keyloop; //return true;
+                }
+              }
               if (op != Op.or)
                 return false;
               else
@@ -208,9 +228,12 @@ class DocumentsDB {
           } catch (e) {
             testVal = null;
           }
+
           isArrayIndex = false;
         }
+
         if (op != Op.inList &&
+            op != Op.exists &&
             op != Op.notInList &&
             (!(query[i] is RegExp) && (op != Op.and && op != Op.or)) &&
             testVal.runtimeType != query[i].runtimeType) continue;
@@ -275,6 +298,14 @@ class DocumentsDB {
             {
               return (query[i] is List) && !query[i].contains(testVal);
             }
+          case Op.exists:
+            {
+              if ((query[i] == true && testVal != null) ||
+                  (query[i] == false && testVal == null)) {
+                continue keyloop;
+              }
+              return false;
+            }
           default:
             {}
         }
@@ -298,18 +329,24 @@ class DocumentsDB {
     this._data.removeWhere((Map<dynamic, dynamic> map) {
       bool test = this._match(query)(map);
       if (test) first++;
-      return removeOne ? (first == 1 ? true : false) : test;
+      test = removeOne ? (first == 1 ? true : false) : test;
+      if (test && this._writer != null) {
+        _onRemove.add(map);
+      }
+      return test;
     });
     return count;
   }
 
   int _updateData(
       Map<dynamic, dynamic> query, Map<dynamic, dynamic> changes, bool replace,
-      [bool updateOne = false]) {
+      {bool updateOne = false, bool upsert = false}) {
     int count = 0;
     Function matcher = this._match(query);
+    bool hasMatch = false;
     for (int i = 0; i < this._data.length; i++) {
       if (!matcher(this._data[i])) continue;
+      hasMatch = true;
       if (count == 1 && updateOne) return count;
       count++;
 
@@ -566,8 +603,12 @@ class DocumentsDB {
           this._data[i][o] = changes[o];
         }
       }
+      if (this._writer != null) _onUpdate.add(this._data[i]);
     }
-
+    if (upsert == true && !hasMatch) {
+      _insert(changes);
+      if (this._writer != null) _onInsert.add(changes);
+    }
     return count;
   }
 
@@ -657,9 +698,7 @@ class DocumentsDB {
                         .compareTo(currentData.toString());
                   }
                 }
-              } catch (e) {
-                print(e);
-              }
+              } catch (e) {}
             }
             if (compareTo != 0) return compareTo;
           }
@@ -699,9 +738,15 @@ class DocumentsDB {
   ObjectId _insert(data) {
     ObjectId _id = ObjectId();
     data['_id'] = _id.toString();
+    if (timestampData == true) {
+      int now = DateTime.now().millisecondsSinceEpoch;
+      data['createdAt'] = now;
+      data['updatedAt'] = now;
+    }
     try {
       this._writer.writeln('+' + json.encode(data));
       this._insertData(data);
+      _onInsert.add(data);
     } catch (e) {
       throw DocumentsDBException('data contains invalid data types');
     }
@@ -771,14 +816,19 @@ class DocumentsDB {
 
   int _update(
       Map<dynamic, dynamic> query, Map<dynamic, dynamic> changes, bool replace,
-      [bool updateOne = false]) {
+      {bool updateOne = false, bool upsert = false}) {
+    if (timestampData == true) {
+      int now = DateTime.now().millisecondsSinceEpoch;
+      changes['updatedAt'] = now;
+    }
     this._writer.writeln('~' +
         json.encode({
           'q': this._encode(query),
           'c': this._encode(changes),
           'r': replace
         }));
-    return this._updateData(query, changes, replace, updateOne);
+    return this._updateData(query, changes, replace,
+        updateOne: updateOne, upsert: upsert);
   }
 
   /// get all documents that match [query]
@@ -841,10 +891,10 @@ class DocumentsDB {
 
   /// update database, takes [query], [changes] and an optional [replace] flag
   Future<int> update(Map<dynamic, dynamic> query, Map<dynamic, dynamic> changes,
-      [bool replace = false]) {
+      {bool replace = false, bool upsert = false}) {
     return this
         ._executionQueue
-        .add<int>(() => this._update(query, changes, replace));
+        .add<int>(() => this._update(query, changes, replace, upsert: upsert));
   }
 
   /// get first document that matches [query]
@@ -856,7 +906,7 @@ class DocumentsDB {
   Future<int> findAndUpdate(
       Map<dynamic, dynamic> query, Map<dynamic, dynamic> changes,
       [bool replace = false]) {
-    return this.update(query, changes, replace);
+    return this.update(query, changes, replace: replace);
   }
 
   Future<int> findAndRemove(Map<dynamic, dynamic> query) {
@@ -876,7 +926,7 @@ class DocumentsDB {
       [bool replace = false]) {
     return this
         ._executionQueue
-        .add<int>(() => this._update(query, changes, replace, true));
+        .add<int>(() => this._update(query, changes, replace, updateOne: true));
   }
 
   Future<ObjectId> importFromFile(fileOrMap) {
@@ -916,6 +966,18 @@ class DocumentsDB {
     return _streams[query].stream;
   }
 
+  Stream<dynamic> get onInsert {
+    return _onInsert.stream;
+  }
+
+  Stream<dynamic> get onRemove {
+    return _onRemove.stream;
+  }
+
+  Stream<dynamic> get onUpdate {
+    return _onUpdate.stream;
+  }
+
   /// 'tidy up' .db file
   Future<DocumentsDB> tidy() {
     return this._executionQueue.add<DocumentsDB>(() => this._tidy());
@@ -926,8 +988,11 @@ class DocumentsDB {
     return this._executionQueue.add(() async {
       _streams
           .forEach((dynamic key, StreamController<dynamic> streamCtrl) async {
-        await streamCtrl.close();
+        await streamCtrl?.close();
       });
+      _onInsert?.close();
+      _onUpdate?.close();
+      _onRemove?.close();
       await _writer.close();
     });
   }

@@ -10,7 +10,7 @@ enum Op {
   lte,
   gte,
   ne,
-  exists, //todo
+  exists,
 
   //
   inList,
