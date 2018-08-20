@@ -17,7 +17,7 @@ class DocumentsDB {
   final String path;
   File _file;
   IOSink _writer;
-  List<Map<dynamic, dynamic>> _dbData;
+  List<Map<dynamic, dynamic>> _dbData = [];
   ExecutionQueue _executionQueue = ExecutionQueue();
   Map<String, Op> _operatorMap = Map();
   Meta _meta = Meta(1);
@@ -30,7 +30,7 @@ class DocumentsDB {
   final bool inMemoryOnly;
   DocumentsDB(this.path,
       {this.timestampData = false, this.inMemoryOnly = false}) {
-    this._file = File(this.path);
+    if (!inMemoryOnly) this._file = File(this.path);
 
     Op.values.forEach((Op op) {
       _operatorMap[op.toString()] = op;
@@ -64,22 +64,24 @@ class DocumentsDB {
   }
 
   Future _open(bool tidy) async {
-    File backupFile = File(this.path + '.bak');
-    if (backupFile.existsSync()) {
-      if (this._file.existsSync()) {
-        this._file.deleteSync();
+    if (!inMemoryOnly) {
+      File backupFile = File(this.path + '.bak');
+      if (backupFile.existsSync()) {
+        if (this._file.existsSync()) {
+          this._file.deleteSync();
+        }
+        backupFile.renameSync(this.path);
+        this._file = File(this.path);
       }
-      backupFile.renameSync(this.path);
-      this._file = File(this.path);
-    }
 
-    if (!this._file.existsSync()) {
-      this._file.createSync();
-    }
-    await _openFileAndRead(this._file);
-    this._writer = this._file.openWrite(mode: FileMode.writeOnlyAppend);
-    if (tidy) {
-      return await this._tidy();
+      if (!this._file.existsSync()) {
+        this._file.createSync();
+      }
+      await _openFileAndRead(this._file);
+      this._writer = this._file.openWrite(mode: FileMode.writeOnlyAppend);
+      if (tidy) {
+        return await this._tidy();
+      }
     }
     return this;
   }
@@ -117,19 +119,20 @@ class DocumentsDB {
   }
 
   Future<DocumentsDB> _tidy() async {
-    await this._writer.close();
-    await this._file.rename(this.path + '.bak');
-    this._file = File(this.path);
-    IOSink writer = this._file.openWrite();
-    writer.writeln(_signature + this._meta.toString());
-    writer.writeAll(this._dbData.map((data) => json.encode(data)), '\n');
-    writer.write('\n');
-    await writer.flush();
-    await writer.close();
+    if (!inMemoryOnly) {
+      await this._writer.close();
+      await this._file.rename(this.path + '.bak');
+      this._file = File(this.path);
+      IOSink writer = this._file.openWrite();
+      writer.writeln(_signature + this._meta.toString());
+      writer.writeAll(this._dbData.map((data) => json.encode(data)), '\n');
+      writer.write('\n');
+      await writer.flush();
+      await writer.close();
 
-    File backupFile = File(this.path + '.bak');
-    await backupFile.delete();
-
+      File backupFile = File(this.path + '.bak');
+      await backupFile.delete();
+    }
     return await this._open(false);
   }
 
@@ -330,7 +333,7 @@ class DocumentsDB {
       bool test = this._match(query)(map);
       if (test) first++;
       test = removeOne ? (first == 1 ? true : false) : test;
-      if (test && this._writer != null) {
+      if (test && (inMemoryOnly || this._writer != null)) {
         _onRemove.add(map);
       }
       return test;
@@ -603,11 +606,13 @@ class DocumentsDB {
           this._data[i][o] = changes[o];
         }
       }
-      if (this._writer != null) _onUpdate.add(this._data[i]);
+      if (inMemoryOnly || this._writer != null) _onUpdate.add(this._data[i]);
     }
     if (upsert == true && !hasMatch) {
-      _insert(changes);
-      if (this._writer != null) _onInsert.add(changes);
+      try {
+        _insert(changes);
+        //if (inMemoryOnly || this._writer != null) _onInsert.add(changes);
+      } catch (e) {}
     }
     return count;
   }
@@ -744,7 +749,7 @@ class DocumentsDB {
       data['updatedAt'] = now;
     }
     try {
-      this._writer.writeln('+' + json.encode(data));
+      if (!inMemoryOnly) this._writer.writeln('+' + json.encode(data));
       this._insertData(data);
       _onInsert.add(data);
     } catch (e) {
@@ -810,7 +815,8 @@ class DocumentsDB {
   }
 
   int _remove(Map<dynamic, dynamic> query, [bool removeOne = false]) {
-    this._writer.writeln('-' + json.encode(this._encode(query)));
+    if (!inMemoryOnly)
+      this._writer.writeln('-' + json.encode(this._encode(query)));
     return this._removeData(query, removeOne);
   }
 
@@ -821,12 +827,14 @@ class DocumentsDB {
       int now = DateTime.now().millisecondsSinceEpoch;
       changes['updatedAt'] = now;
     }
-    this._writer.writeln('~' +
-        json.encode({
-          'q': this._encode(query),
-          'c': this._encode(changes),
-          'r': replace
-        }));
+    if (!inMemoryOnly) {
+      this._writer.writeln('~' +
+          json.encode({
+            'q': this._encode(query),
+            'c': this._encode(changes),
+            'r': replace
+          }));
+    }
     return this._updateData(query, changes, replace,
         updateOne: updateOne, upsert: upsert);
   }

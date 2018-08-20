@@ -17,7 +17,8 @@ void main() async {
     file = File(path + 'init.db');
     file.copySync(path + 'test.db'); */
 
-  final db = DocumentsDB(path + 'test.db');
+  final db =
+      DocumentsDB(path + 'test.db', timestampData: true, inMemoryOnly: true);
   await db.open();
   //print(await db.findOneAndRemove({'a': '5'}));
   /* db.importFromFile([
@@ -42,7 +43,11 @@ void main() async {
     db.watch({"a": "1"}).listen((data) {
       if (data.isNotEmpty) print('with query $data');
     }); */
-  await db.remove({"34": 52});
+  await db.update({
+    "34": 52
+  }, {
+    'top': {"keyi": 'beh'}
+  }, upsert: true);
   db.onUpdate.listen((data) {
     print('on update $data');
   });
@@ -54,7 +59,7 @@ void main() async {
   });
   print((await db.find(
     {
-      Op.exists: {'e.c.d[0]': true, 'a': true}
+      // Op.exists: {'e.c.d[0]': true, 'a': true}
     },
     projection: {'e': false, 'a': false},
     /*  sort: {'e.c.d[0].dsqd': 1, 'a': 1},
