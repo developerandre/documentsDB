@@ -1,9 +1,5 @@
 $documentsdb{"version":1}
-{"b":4,"_id":"5b78d17ac5aa4173a91765df","e":{"c":{"d":[-25]}}}
-{"b":6,"_id":"5b78d17ac5aa4173a91765de"}
-{"_id":"5b78d7910d33aa353bebc2b6","a":1,"b":7,"e":{"c":{"d":[5]}}}
-{"a":4,"b":4,"_id":"5b78d17ac5aa4173a91765e1","e":{"c":{"d":[5]}}}
-{"b":10,"_id":"5b78d17ac5aa4173a91765e0"}
-{"_id":"5b78d7910d33aa353bebc2b7","b":5,"e":{"c":{"d":[1]}}}
-{"z.34":34,"_id":"5b79f5bf421820915e54a2c1"}
-{"z.34":25,"_id":"5b79f5e0b5c8f91342d685be"}
+{"type":{"at":"1"},"_id":"5b7aafe014557cc835aa4c33","createdAt":1534767072576,"updatedAt":1534767072576}
+{"type":{"at":"2"},"_id":"5b7aafe014557cc835aa4c34","createdAt":1534767072585,"updatedAt":1534767072585}
+{"type":{"at":"3"},"_id":"5b7aafe014557cc835aa4c35","createdAt":1534767072588,"updatedAt":1534767072588}
+{"type":{"at":"4"},"_id":"5b7aafe014557cc835aa4c36","createdAt":1534767072588,"updatedAt":1534767072590}

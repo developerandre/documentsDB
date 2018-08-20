@@ -26,6 +26,7 @@ class DocumentsDB {
   final StreamController _onInsert = StreamController();
   final StreamController _onUpdate = StreamController();
   final StreamController _onRemove = StreamController();
+  final Map<String, _IndexOptions> _indexes = {};
   final bool timestampData;
   final bool inMemoryOnly;
   DocumentsDB(this.path,
@@ -357,13 +358,14 @@ class DocumentsDB {
         this._data[i] =
             Map<dynamic, dynamic>.from({'_id': ObjectId().toString()});
       }
-
+      var temp;
       for (var o in changes.keys) {
         if (o is Op) {
           for (String p in changes[o].keys) {
             String formattedP = p.toString().replaceAllMapped(
                 RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
             List<String> keyPath = formattedP.split('.');
+            temp = this._data[i];
             switch (o) {
               case Op.set:
                 {
@@ -603,7 +605,15 @@ class DocumentsDB {
             }
           }
         } else {
-          this._data[i][o] = changes[o];
+          Map map = Map.from(this._data[i]);
+          map.addAll(changes);
+          try {
+            _verifyIndex(map, verifyUnicity: false, temp: temp, i: i);
+            this._data[i][o] = changes[o];
+          } catch (e) {
+            this._data[i] = temp;
+            throw e;
+          }
         }
       }
       if (inMemoryOnly || this._writer != null) _onUpdate.add(this._data[i]);
@@ -611,7 +621,6 @@ class DocumentsDB {
     if (upsert == true && !hasMatch) {
       try {
         _insert(changes);
-        //if (inMemoryOnly || this._writer != null) _onInsert.add(changes);
       } catch (e) {}
     }
     return count;
@@ -740,7 +749,7 @@ class DocumentsDB {
   }
 
   /// Insert [data] update cache object and write change to file
-  ObjectId _insert(data) {
+  ObjectId _insert(Map data) {
     ObjectId _id = ObjectId();
     data['_id'] = _id.toString();
     if (timestampData == true) {
@@ -749,10 +758,12 @@ class DocumentsDB {
       data['updatedAt'] = now;
     }
     try {
+      _verifyIndex(data);
       if (!inMemoryOnly) this._writer.writeln('+' + json.encode(data));
       this._insertData(data);
       _onInsert.add(data);
     } catch (e) {
+      print(e);
       throw DocumentsDBException('data contains invalid data types');
     }
     return _id;
@@ -1004,4 +1015,94 @@ class DocumentsDB {
       await _writer?.close();
     });
   }
+
+  ensureIndex(List<String> fieldNames,
+      {bool unique = false,
+      bool mandatory = false,
+      DateTime expireAfterSeconds}) {
+    fieldNames.forEach((String field) {
+      if (field != null && field.trim().isNotEmpty) {
+        _indexes.addAll(
+            {field: _IndexOptions(unique, mandatory, expireAfterSeconds)});
+        if (expireAfterSeconds != null &&
+            !expireAfterSeconds.difference(DateTime.now()).isNegative) {
+          Timer(
+              Duration(
+                  milliseconds: expireAfterSeconds
+                      .difference(DateTime.now())
+                      .inMilliseconds), () {
+            removeIndex([field]);
+          });
+        }
+      }
+    });
+  }
+
+  removeIndex(List<String> fieldNames) {
+    fieldNames.forEach((String field) {
+      _indexes.remove(field);
+    });
+  }
+
+  void _verifyIndex(Map data,
+      {bool verifyUnicity = true, dynamic temp, int i}) {
+    if (_indexes.isNotEmpty) {
+      String formattedI;
+      bool isArrayIndex = false;
+      _indexes.forEach((String field, _IndexOptions option) async {
+        formattedI = field.replaceAllMapped(
+            RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
+        List<String> keyPath = formattedI.split('.');
+        dynamic testVal = Map.from(data);
+        for (dynamic o in keyPath) {
+          if (RegExp(r"\[(\-?[0-9]+)\]").hasMatch(o)) {
+            isArrayIndex = true;
+            o = o.toString().replaceAllMapped(
+                RegExp(r"\[(\-?[0-9]+)\]"), (Match m) => "${m[1]}");
+          }
+          try {
+            if (isArrayIndex && testVal is List) {
+              int index = int.tryParse(o);
+              if (index < 0 && testVal.isNotEmpty)
+                index = testVal.length + index;
+              testVal = testVal?.elementAt(index);
+            } else
+              testVal = testVal[o];
+          } catch (e) {
+            testVal = null;
+            if (option != null && option.mandatory == true) {
+              if (temp != null && i != null)
+                this._data[i] = temp;
+              else
+                throw DocumentsDBException("$field field is mandatory");
+            }
+          }
+          isArrayIndex = false;
+        }
+        if (option != null && option.mandatory == true) {
+          if (testVal == null) {
+            if (temp != null && i != null)
+              this._data[i] = temp;
+            else
+              throw DocumentsDBException("field `$field` is mandatory");
+          }
+        }
+        if (verifyUnicity) {
+          if (option != null && option.unique == true) {
+            dynamic finded = await _find({field: testVal});
+            if (finded != null && (finded is List && finded.isNotEmpty)) {
+              throw DocumentsDBException("field `$field` value must be unique");
+            }
+          }
+        }
+      });
+    }
+  }
+}
+
+class _IndexOptions {
+  bool unique = false;
+  bool mandatory = false;
+  DateTime expireAfterSeconds;
+  _IndexOptions(this.unique, this.mandatory, this.expireAfterSeconds);
 }
