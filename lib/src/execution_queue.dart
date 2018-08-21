@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:documentsdb/src/documentsdb_exceptions.dart';
+
 class _Item {
   final Completer completer;
   final Function job;
@@ -14,7 +16,13 @@ class ExecutionQueue {
     if (!_active && _queue.length > 0) {
       this._active = true;
       _Item item = _queue.removeAt(0);
-      item.completer.complete(await item.job());
+      try {
+        var value = await item.job();
+        item.completer.complete(value);
+      } catch (e) {
+        item.completer.completeError(e.toString());
+      }
+
       this._active = false;
       this._check();
     }

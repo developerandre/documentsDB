@@ -1,34 +1,49 @@
 import 'dart:io';
-
-//import 'package:test/test.dart';
+import 'dart:convert';
 
 import 'package:documentsdb/documentsdb.dart';
 
 void main() async {
-  //test('adds one to input values', () async {
   final path = Directory.current.path + '/test/';
-  //File file;
-  /* File file = File(path + 'test.db');
-    if (file.existsSync()) {
-      file.deleteSync();
-    }
-    file = File(path + 'init.db');
-    file.copySync(path + 'test.db'); */
 
+  /** 
+     timestampData: if true fields createdAt and updatedAt will be added on insertion 
+     
+     inMemoryOnly : if true path will be ignore and all data will be in memory
+    **/
   final db =
       DocumentsDB(path + 'test.db', timestampData: true, inMemoryOnly: false);
   await db.open();
+  String str = "Hello world";
+  print(base64.encode(utf8.encode(str)));
+  /**   Index field
+   *    fieldNames is List of fields to index
+   *    unique : if true verify if value of each field of List has unique value
+   *    mandatory : if true each field of List is require on insertion and cannot remove on update
+   * 
+   * expireAfterSeconds options if set will remove indexing on each field on List at specified date
+   * 
+   * 
+   */
   await db.ensureIndex(['type.at'], mandatory: true, unique: true);
+
+  /**  Trigger  
+   *   onInsert, onUpdate, onRemove to add trigger on these events
+   * 
+   *   There are also possibility to set trigger before or after each event
+   * 
+   *  **/
   Function condition = (dataToInsert) {
     //print('condition $dataToInsert');
     return true;
   };
 
   db.trigger.onInsert.onBefore.addAll({
-    condition: (insertedData) {
+    condition: (dataToInsert) {
       //print('trigger on insert $insertedData');
     }
   });
+
   //await db.removeIndex(['type']);
   //print(await db.findOneAndRemove({'a': '5'}));
   /* db.importFromFile([
@@ -41,9 +56,21 @@ void main() async {
         "o": {"sqdq": []}
       }
     ]); */
-  await db.insert({
-    'type': {'at': '1'}
-  } /* ,
+  db.insert({'a': '6'}).then((data) {
+    print("insert 6 $data");
+  }).catchError((e) {
+    print("catchhhhhhhhhh insert 6$e");
+  });
+  db.findOneAndRemove({"type.at": "4"}).then((data) {
+    print("remove 7 $data");
+  }).catchError((e) {
+    print("catchhhhhhhhhh insert 7 $e");
+  });
+
+  db.insertMany([
+    {
+      'type': {'at': '1'}
+    },
     {
       'type': {'at': '2'}
     },
@@ -52,25 +79,34 @@ void main() async {
     },
     {
       'type': {'at': '4'}
-    } */
-      );
+    }
+  ]).then((data) {
+    print("insert $data");
+  }).catchError((e) {
+    print("catchhhhhhhhhh $e");
+  });
+
   /* db.watch().listen((data) {
       if (data.isNotEmpty) print('without $data');
     });
     db.watch({"a": "1"}).listen((data) {
       if (data.isNotEmpty) print('with query $data');
     }); */
-  /* await db.update({
-    "34": 52
+  db.update({
+    "type.at": "4"
   }, {
-    'top': {"keyi": 'beh'}
-  }, upsert: true); */
+    'type': {'eee': '4'}
+  }, upsert: true).then((data) {
+    print("update $data");
+  }).catchError((e) {
+    print("catccccch $e");
+  });
 
-  await db.update({
+  /*  await db.update({
     'type.at': '4'
   }, {
     Op.unset: {"type.at": true}
-  }, upsert: true);
+  }, upsert: true); */
 
   /*  db.onUpdate.listen((data) {
     print('on update $data');
@@ -132,8 +168,6 @@ void main() async {
       Op.gt: {'a': 0},
     }));
  */
-  //await Future.delayed(Duration(days: 1));
   await db.tidy();
   await db.close();
-  // });
 }

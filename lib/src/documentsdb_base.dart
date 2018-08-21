@@ -27,6 +27,7 @@ class DocumentsDB {
   final StreamController _onUpdate = StreamController();
   final StreamController _onRemove = StreamController();
   final Map<String, _IndexOptions> _indexes = {};
+  final _Trigger _trigger = _Trigger();
   final bool timestampData;
   final bool inMemoryOnly;
   DocumentsDB(this.path,
@@ -94,7 +95,7 @@ class DocumentsDB {
     await reader
         .transform(utf8.decoder)
         .transform(LineSplitter())
-        .forEach((String line) {
+        .forEach((String line) async {
       if (line != '') {
         if (firstLine) {
           firstLine = false;
@@ -104,16 +105,14 @@ class DocumentsDB {
                   Meta.fromMap(json.decode(line.substring(_signature.length)));
             } catch (e) {
               // no valid meta -> default meta
-              print(e);
             }
             return;
           }
         }
         try {
-          this._fromFile(line);
+          await this._fromFile(line);
         } catch (e) {
           // skip invalid line
-          print(e);
         }
       }
     });
@@ -137,7 +136,7 @@ class DocumentsDB {
     return await this._open(false);
   }
 
-  void _fromFile(String line) {
+  Future _fromFile(String line) async {
     try {
       switch (line[0]) {
         case '+':
@@ -153,7 +152,7 @@ class DocumentsDB {
         case '~':
           {
             var u = json.decode(line.substring(1));
-            this._updateData(
+            await this._updateData(
                 this._decode(u['q']), this._decode(u['c']), u['r']);
             break;
           }
@@ -163,9 +162,8 @@ class DocumentsDB {
             break;
           }
       }
-    } catch (e) {
-      print(e);
-    }
+    } catch (e) {}
+    return null;
   }
 
   Function _match(query, [Op op = Op.and]) {
@@ -330,21 +328,29 @@ class DocumentsDB {
   int _removeData(Map<dynamic, dynamic> query, [bool removeOne = false]) {
     int count = this._data.where(this._match(query)).length;
     int first = 0;
-    this._data.removeWhere((Map<dynamic, dynamic> map) {
-      bool test = this._match(query)(map);
-      if (test) first++;
-      test = removeOne ? (first == 1 ? true : false) : test;
-      if (test && (inMemoryOnly || this._writer != null)) {
-        _onRemove.add(map);
-      }
-      return test;
-    });
+    if (count > 0) {
+      this._data.removeWhere((Map<dynamic, dynamic> map) {
+        bool test = this._match(query)(map);
+        if (!test) return false;
+        first++;
+        _execTrigger(_OperationType.REMOVE, _EventType.ONBEFORE, map);
+        test = removeOne ? (first == 1 ? true : false) : test;
+        if (test && (inMemoryOnly || this._writer != null)) {
+          _onRemove.add(map);
+        }
+        if (test) {
+          _execTrigger(_OperationType.REMOVE, _EventType.ONAFTER, map);
+        }
+        return test;
+      });
+    }
     return count;
   }
 
-  int _updateData(
+  Future<int> _updateData(
       Map<dynamic, dynamic> query, Map<dynamic, dynamic> changes, bool replace,
-      {bool updateOne = false, bool upsert = false}) {
+      {bool updateOne = false, bool upsert = false}) async {
+    Completer<int> completer = Completer<int>();
     int count = 0;
     Function matcher = this._match(query);
     bool hasMatch = false;
@@ -359,6 +365,7 @@ class DocumentsDB {
             Map<dynamic, dynamic>.from({'_id': ObjectId().toString()});
       }
       var temp;
+      _execTrigger(_OperationType.UPDATE, _EventType.ONBEFORE, this._data[i]);
       for (var o in changes.keys) {
         if (o is Op) {
           for (String p in changes[o].keys) {
@@ -600,7 +607,8 @@ class DocumentsDB {
                 }
               default:
                 {
-                  throw 'invalid';
+                  //throw 'invalid';
+                  completer.completeError("invalid");
                 }
             }
           }
@@ -608,22 +616,38 @@ class DocumentsDB {
           Map map = Map.from(this._data[i]);
           map.addAll(changes);
           try {
-            _verifyIndex(map, verifyUnicity: false, temp: temp, i: i);
+            await _verifyIndex(map, verifyUnicity: false, temp: temp, i: i);
             this._data[i][o] = changes[o];
           } catch (e) {
-            this._data[i] = temp;
-            throw e;
+            if (temp != null) this._data[i] = temp;
+            completer.completeError(e);
           }
         }
       }
+      _execTrigger(_OperationType.UPDATE, _EventType.ONAFTER, this._data[i]);
       if (inMemoryOnly || this._writer != null) _onUpdate.add(this._data[i]);
     }
+    if (hasMatch) completer.complete(count);
     if (upsert == true && !hasMatch) {
       try {
-        _insert(changes);
-      } catch (e) {}
+        runZoned(() {
+          _insert(changes).then((data) {
+            completer.complete(1);
+          }).catchError((e) {
+            completer.completeError(e);
+          });
+        }, onError: (e) {
+          if (!completer.isCompleted) completer.completeError(e);
+        });
+      } catch (e) {
+        if (e is DocumentsDBException &&
+            e.message == "data contains invalid data types")
+          print("Cannot insert data with Op");
+        if (!completer.isCompleted) completer.completeError(e);
+      }
     }
-    return count;
+    //if (!completer.isCompleted) completer.complete(count);
+    return completer.future;
   }
 
   List<Map<dynamic, dynamic>> _buildProjection(
@@ -749,7 +773,7 @@ class DocumentsDB {
   }
 
   /// Insert [data] update cache object and write change to file
-  ObjectId _insert(Map data) {
+  Future<ObjectId> _insert(Map data) async {
     ObjectId _id = ObjectId();
     data['_id'] = _id.toString();
     if (timestampData == true) {
@@ -758,13 +782,16 @@ class DocumentsDB {
       data['updatedAt'] = now;
     }
     try {
-      _verifyIndex(data);
+      await _verifyIndex(data);
+      _execTrigger(_OperationType.INSERTION, _EventType.ONBEFORE, data);
       if (!inMemoryOnly) this._writer.writeln('+' + json.encode(data));
       this._insertData(data);
       _onInsert.add(data);
+      _execTrigger(_OperationType.INSERTION, _EventType.ONAFTER, data);
     } catch (e) {
-      print(e);
-      throw DocumentsDBException('data contains invalid data types');
+      String message = 'data contains invalid data types';
+      if (e.toString().startsWith("Index error:")) message = e.toString();
+      return Future.error(DocumentsDBException(message));
     }
     return _id;
   }
@@ -826,28 +853,38 @@ class DocumentsDB {
   }
 
   int _remove(Map<dynamic, dynamic> query, [bool removeOne = false]) {
-    if (!inMemoryOnly)
-      this._writer.writeln('-' + json.encode(this._encode(query)));
-    return this._removeData(query, removeOne);
+    int removeData = this._removeData(query, removeOne);
+    if (removeData > 0) {
+      if (!inMemoryOnly)
+        this._writer.writeln('-' + json.encode(this._encode(query)));
+    }
+    return removeData;
   }
 
-  int _update(
+  Future<int> _update(
       Map<dynamic, dynamic> query, Map<dynamic, dynamic> changes, bool replace,
-      {bool updateOne = false, bool upsert = false}) {
+      {bool updateOne = false, bool upsert = false}) async {
     if (timestampData == true) {
       int now = DateTime.now().millisecondsSinceEpoch;
       changes['updatedAt'] = now;
     }
-    if (!inMemoryOnly) {
-      this._writer.writeln('~' +
-          json.encode({
-            'q': this._encode(query),
-            'c': this._encode(changes),
-            'r': replace
-          }));
+    try {
+      int updateData = await this._updateData(query, changes, replace,
+          updateOne: updateOne, upsert: upsert);
+      if (updateData > 0) {
+        if (!inMemoryOnly) {
+          this._writer.writeln('~' +
+              json.encode({
+                'q': this._encode(query),
+                'c': this._encode(changes),
+                'r': replace
+              }));
+        }
+      }
+      return updateData;
+    } catch (e) {
+      return Future.error(e);
     }
-    return this._updateData(query, changes, replace,
-        updateOne: updateOne, upsert: upsert);
   }
 
   /// get all documents that match [query]
@@ -893,11 +930,12 @@ class DocumentsDB {
 
   /// insert many documents
   Future<List<ObjectId>> insertMany(List<Map<dynamic, dynamic>> docs) {
-    return this._executionQueue.add<List<ObjectId>>(() {
+    return this._executionQueue.add<List<ObjectId>>(() async {
       List<ObjectId> _ids = [];
-      docs.forEach((doc) {
-        _ids.add(this._insert(doc));
-      });
+      for (Map doc in docs) {
+        ObjectId objectId = await this._insert(doc);
+        _ids.add(objectId);
+      }
       return _ids;
     });
   }
@@ -943,17 +981,16 @@ class DocumentsDB {
   Future<int> findOneAndUpdate(
       Map<dynamic, dynamic> query, Map<dynamic, dynamic> changes,
       [bool replace = false]) {
-    return this
-        ._executionQueue
-        .add<int>(() => this._update(query, changes, replace, updateOne: true));
+    return this._executionQueue.add<int>(() async =>
+        await this._update(query, changes, replace, updateOne: true));
   }
 
-  Future<ObjectId> importFromFile(fileOrMap) {
+  Future<ObjectId> importFromFile(fileOrMap) async {
     if (fileOrMap is File) {
       _openFileAndRead(fileOrMap, false);
       return this._executionQueue.add<ObjectId>(() => ObjectId());
     } else if (fileOrMap is Map) {
-      this._fromFile(fileOrMap.toString());
+      await this._fromFile(fileOrMap.toString());
       return this._executionQueue.add<ObjectId>(() => ObjectId());
     } else if (fileOrMap is List<Map>) {
       fileOrMap.forEach((map) {
@@ -1016,6 +1053,10 @@ class DocumentsDB {
     });
   }
 
+  _Trigger get trigger {
+    return _trigger;
+  }
+
   ensureIndex(List<String> fieldNames,
       {bool unique = false,
       bool mandatory = false,
@@ -1044,12 +1085,14 @@ class DocumentsDB {
     });
   }
 
-  void _verifyIndex(Map data,
-      {bool verifyUnicity = true, dynamic temp, int i}) {
+  Future _verifyIndex(Map data,
+      {bool verifyUnicity = true, dynamic temp, int i}) async {
     if (_indexes.isNotEmpty) {
       String formattedI;
       bool isArrayIndex = false;
-      _indexes.forEach((String field, _IndexOptions option) async {
+      _IndexOptions option;
+      for (String field in _indexes.keys) {
+        option = _indexes[field];
         formattedI = field.replaceAllMapped(
             RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
         List<String> keyPath = formattedI.split('.');
@@ -1073,8 +1116,10 @@ class DocumentsDB {
             if (option != null && option.mandatory == true) {
               if (temp != null && i != null)
                 this._data[i] = temp;
-              else
-                throw DocumentsDBException("$field field is mandatory");
+              else {
+                return Future.error(DocumentsDBException(
+                    "Index error: field `$field` is mandatory"));
+              }
             }
           }
           isArrayIndex = false;
@@ -1083,22 +1128,139 @@ class DocumentsDB {
           if (testVal == null) {
             if (temp != null && i != null)
               this._data[i] = temp;
-            else
-              throw DocumentsDBException("field `$field` is mandatory");
+            else {
+              return Future.error(DocumentsDBException(
+                  "Index error: field `$field` is mandatory"));
+            }
           }
         }
         if (verifyUnicity) {
           if (option != null && option.unique == true) {
             dynamic finded = await _find({field: testVal});
             if (finded != null && (finded is List && finded.isNotEmpty)) {
-              throw DocumentsDBException("field `$field` value must be unique");
+              return Future.error(DocumentsDBException(
+                  "Index error: field `$field` value must be unique"));
             }
           }
         }
-      });
+      }
+    }
+    return null;
+  }
+
+  void _execTrigger(_OperationType type, _EventType event, dynamic data) {
+    if (data is Map)
+      data = Map.from(data);
+    else if (data is List) data = List.from(data);
+    if (type == _OperationType.INSERTION) {
+      if (event == _EventType.ONBEFORE &&
+          _trigger.onInsert.onBefore.isNotEmpty) {
+        _trigger.onInsert.onBefore
+            .forEach((StatementFunction condition, ReqFunction req) async {
+          if (condition(data) == true) {
+            try {
+              await Future.sync(() {
+                req(data);
+              });
+            } catch (e) {
+              throw e;
+            }
+          }
+        });
+      } else if (event == _EventType.ONAFTER &&
+          _trigger.onInsert.onAfter.isNotEmpty) {
+        _trigger.onInsert.onAfter
+            .forEach((StatementFunction condition, ReqFunction req) async {
+          if (condition(data) == true) {
+            try {
+              await Future.sync(() {
+                req(data);
+              });
+            } catch (e) {
+              throw e;
+            }
+          }
+        });
+      }
+    } else if (type == _OperationType.UPDATE) {
+      if (event == _EventType.ONBEFORE &&
+          _trigger.onUpdate.onBefore.isNotEmpty) {
+        _trigger.onUpdate.onBefore
+            .forEach((StatementFunction condition, ReqFunction req) async {
+          if (condition(data) == true) {
+            try {
+              await Future.sync(() {
+                req(data);
+              });
+            } catch (e) {
+              throw e;
+            }
+          }
+        });
+      } else if (event == _EventType.ONAFTER &&
+          _trigger.onUpdate.onAfter.isNotEmpty) {
+        _trigger.onUpdate.onAfter
+            .forEach((StatementFunction condition, ReqFunction req) async {
+          if (condition(data) == true) {
+            try {
+              await Future.sync(() {
+                req(data);
+              });
+            } catch (e) {
+              throw e;
+            }
+          }
+        });
+      }
+    } else if (type == _OperationType.REMOVE) {
+      if (event == _EventType.ONBEFORE &&
+          _trigger.onRemove.onBefore.isNotEmpty) {
+        _trigger.onRemove.onBefore
+            .forEach((StatementFunction condition, ReqFunction req) async {
+          if (condition(data) == true) {
+            try {
+              await Future.sync(() {
+                req(data);
+              });
+            } catch (e) {
+              throw e;
+            }
+          }
+        });
+      } else if (event == _EventType.ONAFTER &&
+          _trigger.onRemove.onAfter.isNotEmpty) {
+        _trigger.onRemove.onAfter
+            .forEach((StatementFunction condition, ReqFunction req) async {
+          if (condition(data) == true) {
+            try {
+              await Future.sync(() {
+                req(data);
+              });
+            } catch (e) {
+              throw e;
+            }
+          }
+        });
+      }
     }
   }
 }
+
+class _Trigger {
+  _TriggerEvent onInsert = _TriggerEvent();
+  _TriggerEvent onUpdate = _TriggerEvent();
+  _TriggerEvent onRemove = _TriggerEvent();
+}
+
+class _TriggerEvent {
+  Map<StatementFunction, ReqFunction> onBefore = {};
+  Map<StatementFunction, ReqFunction> onAfter = {};
+}
+
+typedef bool StatementFunction(dynamic data);
+typedef void ReqFunction(dynamic data);
+enum _OperationType { INSERTION, UPDATE, REMOVE }
+enum _EventType { ONBEFORE, ONAFTER }
 
 class _IndexOptions {
   bool unique = false;
