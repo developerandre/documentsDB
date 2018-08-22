@@ -1,7 +1,5 @@
 import 'dart:async';
 
-import 'package:documentsdb/src/documentsdb_exceptions.dart';
-
 class _Item {
   final Completer completer;
   final Function job;

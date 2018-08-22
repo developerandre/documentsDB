@@ -4,7 +4,6 @@ class DocumentsDBException implements Exception {
   DocumentsDBException(this.message);
   @override
   String toString() {
-    // TODO: implement toString
     return message;
   }
 }

@@ -65,7 +65,7 @@ class DocumentsDB {
     return this._executionQueue.add<DocumentsDB>(() => this._open(tidy));
   }
 
-  Future _open(bool tidy) async {
+  Future<DocumentsDB> _open(bool tidy) async {
     if (!inMemoryOnly) {
       File backupFile = File(this.path + '.bak');
       if (backupFile.existsSync()) {
@@ -80,6 +80,7 @@ class DocumentsDB {
         this._file.createSync();
       }
       await _openFileAndRead(this._file);
+
       this._writer = this._file.openWrite(mode: FileMode.writeOnlyAppend);
       if (tidy) {
         return await this._tidy();
@@ -185,12 +186,10 @@ class DocumentsDB {
         if (query[i] is ObjectId) {
           query[i] = query[i].toString();
         }
-        String formattedI = i.toString().replaceAllMapped(
-            RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
-        List keyPath = formattedI.split('.');
+        List<String> keyPath = _getKeyPath(i);
         dynamic testVal = test;
         bool isArrayIndex = false;
-        for (dynamic o in keyPath) {
+        for (String o in keyPath) {
           if (RegExp(r"\[(\-?[0-9]+)\]").hasMatch(o)) {
             isArrayIndex = true;
             o = o.toString().replaceAllMapped(
@@ -326,24 +325,25 @@ class DocumentsDB {
   }
 
   int _removeData(Map<dynamic, dynamic> query, [bool removeOne = false]) {
-    int count = this._data.where(this._match(query)).length;
     int first = 0;
-    if (count > 0) {
-      this._data.removeWhere((Map<dynamic, dynamic> map) {
-        bool test = this._match(query)(map);
-        if (!test) return false;
-        first++;
-        _execTrigger(_OperationType.REMOVE, _EventType.ONBEFORE, map);
-        test = removeOne ? (first == 1 ? true : false) : test;
-        if (test && (inMemoryOnly || this._writer != null)) {
-          _onRemove.add(map);
-        }
-        if (test) {
-          _execTrigger(_OperationType.REMOVE, _EventType.ONAFTER, map);
-        }
-        return test;
-      });
-    }
+    int count = 0;
+
+    this._data.removeWhere((Map<dynamic, dynamic> map) {
+      bool test = this._match(query)(map);
+      if (!test) return false;
+      first++;
+      _execTrigger(_OperationType.REMOVE, _EventType.ONBEFORE, map);
+      test = removeOne ? (first == 1 ? true : false) : test;
+      if (test && (inMemoryOnly || this._writer != null)) {
+        _onRemove.add(map);
+      }
+      if (test) {
+        count++;
+        _execTrigger(_OperationType.REMOVE, _EventType.ONAFTER, map);
+      }
+      return test;
+    });
+
     return count;
   }
 
@@ -369,9 +369,7 @@ class DocumentsDB {
       for (var o in changes.keys) {
         if (o is Op) {
           for (String p in changes[o].keys) {
-            String formattedP = p.toString().replaceAllMapped(
-                RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
-            List<String> keyPath = formattedP.split('.');
+            List<String> keyPath = _getKeyPath(p);
             temp = this._data[i];
             switch (o) {
               case Op.set:
@@ -645,7 +643,7 @@ class DocumentsDB {
           print("Cannot insert data with Op");
         if (!completer.isCompleted) completer.completeError(e);
       }
-    }
+    } else if (!hasMatch) completer.complete(0);
     //if (!completer.isCompleted) completer.complete(count);
     return completer.future;
   }
@@ -658,9 +656,7 @@ class DocumentsDB {
         projection.isNotEmpty) {
       for (var key in projection.keys) {
         if (projection[key] == false) {
-          String formattedP = key.toString().replaceAllMapped(
-              RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
-          List<String> keyPath = formattedP.split('.');
+          List<String> keyPath = _getKeyPath(key);
           list = list.map<Map<dynamic, dynamic>>((Map<dynamic, dynamic> map) {
             return removeDeeply(keyPath, map);
           }).toList();
@@ -683,9 +679,7 @@ class DocumentsDB {
       if (sort != null && sort.isNotEmpty) {
         list.sort((Map<dynamic, dynamic> a, Map<dynamic, dynamic> b) {
           for (var key in sort.keys) {
-            String formartKey = key.toString().replaceAllMapped(
-                RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
-            List<String> keyPath = formartKey.toString().split('.');
+            List<String> keyPath = _getKeyPath(key);
             dynamic currentData = a;
             dynamic currentBData = b;
             bool isArrayIndex = false;
@@ -774,6 +768,7 @@ class DocumentsDB {
 
   /// Insert [data] update cache object and write change to file
   Future<ObjectId> _insert(Map data) async {
+    data = Map.from(data);
     ObjectId _id = ObjectId();
     data['_id'] = _id.toString();
     if (timestampData == true) {
@@ -854,6 +849,7 @@ class DocumentsDB {
 
   int _remove(Map<dynamic, dynamic> query, [bool removeOne = false]) {
     int removeData = this._removeData(query, removeOne);
+
     if (removeData > 0) {
       if (!inMemoryOnly)
         this._writer.writeln('-' + json.encode(this._encode(query)));
@@ -863,28 +859,36 @@ class DocumentsDB {
 
   Future<int> _update(
       Map<dynamic, dynamic> query, Map<dynamic, dynamic> changes, bool replace,
-      {bool updateOne = false, bool upsert = false}) async {
+      {bool updateOne = false, bool upsert = false}) {
+    Completer<int> completer = Completer<int>();
     if (timestampData == true) {
       int now = DateTime.now().millisecondsSinceEpoch;
       changes['updatedAt'] = now;
     }
+
     try {
-      int updateData = await this._updateData(query, changes, replace,
-          updateOne: updateOne, upsert: upsert);
-      if (updateData > 0) {
-        if (!inMemoryOnly) {
-          this._writer.writeln('~' +
-              json.encode({
-                'q': this._encode(query),
-                'c': this._encode(changes),
-                'r': replace
-              }));
+      int updateData;
+      runZoned(() async {
+        updateData = await this._updateData(query, changes, replace,
+            updateOne: updateOne, upsert: upsert);
+        if (updateData > 0) {
+          if (!inMemoryOnly) {
+            this._writer.writeln('~' +
+                json.encode({
+                  'q': this._encode(query),
+                  'c': this._encode(changes),
+                  'r': replace
+                }));
+          }
         }
-      }
-      return updateData;
+        completer.complete(updateData);
+      }, onError: (e) {
+        completer.completeError(e);
+      });
     } catch (e) {
-      return Future.error(e);
+      completer.completeError(e);
     }
+    return completer.future;
   }
 
   /// get all documents that match [query]
@@ -985,35 +989,28 @@ class DocumentsDB {
         await this._update(query, changes, replace, updateOne: true));
   }
 
-  Future<ObjectId> importFromFile(fileOrMap) async {
+  Future<dynamic> importFromFile(fileOrMap) async {
     if (fileOrMap is File) {
       _openFileAndRead(fileOrMap, false);
-      return this._executionQueue.add<ObjectId>(() => ObjectId());
+      return this._executionQueue.add<ObjectId>(() => () => ObjectId());
     } else if (fileOrMap is Map) {
       await this._fromFile(fileOrMap.toString());
-      return this._executionQueue.add<ObjectId>(() => ObjectId());
+      return this._executionQueue.add<ObjectId>(() => () => ObjectId());
     } else if (fileOrMap is List<Map>) {
-      fileOrMap.forEach((map) {
-        this._executionQueue.add<ObjectId>(() => this._insert(map));
-      });
-      return this._executionQueue.add<ObjectId>(() => ObjectId());
-    }
-    return this._executionQueue.add<ObjectId>(() => null);
+      return insertMany(fileOrMap);
+    } else
+      return this._executionQueue.add<ObjectId>(() => () => null);
   }
 
   Future<List<Map<dynamic, dynamic>>> export(
       [Map<dynamic, dynamic> query = const {}, File file]) async {
-    List<Map> list = await this
-        ._executionQueue
-        .add<List<Map<dynamic, dynamic>>>(() => this.find(query));
+    List<Map> list = await this.find(query);
     if (file != null) file.writeAsStringSync(list.toString());
     return list;
   }
 
   Future<int> count([Map<dynamic, dynamic> query = const {}]) async {
-    List<Map> list = await this
-        ._executionQueue
-        .add<List<Map<dynamic, dynamic>>>(() => this.find(query));
+    List<Map> list = await this.find(query);
     return list?.length ?? 0;
   }
 
@@ -1093,9 +1090,7 @@ class DocumentsDB {
       _IndexOptions option;
       for (String field in _indexes.keys) {
         option = _indexes[field];
-        formattedI = field.replaceAllMapped(
-            RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
-        List<String> keyPath = formattedI.split('.');
+        List<String> keyPath = _getKeyPath(field);
         dynamic testVal = Map.from(data);
         for (dynamic o in keyPath) {
           if (RegExp(r"\[(\-?[0-9]+)\]").hasMatch(o)) {
@@ -1243,6 +1238,13 @@ class DocumentsDB {
         });
       }
     }
+  }
+
+  List<String> _getKeyPath(key) {
+    String formattedI = key
+        .toString()
+        .replaceAllMapped(RegExp(r"(\[\-?[0-9]+\])"), (Match m) => ".${m[0]}");
+    return formattedI.split('.');
   }
 }
 

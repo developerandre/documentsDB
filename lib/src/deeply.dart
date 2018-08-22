@@ -1,3 +1,22 @@
+String _formatPath(dynamic path) {
+  RegExp regExp = RegExp(r"\[?(\-?[0-9]+)\]?");
+  if (regExp.hasMatch(path.toString())) {
+    return path.toString().replaceAllMapped(regExp, (Match m) => "${m[1]}");
+  }
+  return path.toString();
+}
+
+dynamic _getCurrentPath(bool isList, path, data) {
+  var currentPath;
+  if (isList) {
+    currentPath = int.tryParse(path.toString()) ?? 0;
+    if (currentPath < 0 && data.isNotEmpty)
+      currentPath = data.length + currentPath;
+  } else
+    currentPath = path;
+  return currentPath;
+}
+
 dynamic updateDeeply(List<dynamic> keyPath, dynamic data, Function updater,
     [dynamic notSetValue, int i = 0]) {
   if (i == keyPath.length) {
@@ -12,18 +31,8 @@ dynamic updateDeeply(List<dynamic> keyPath, dynamic data, Function updater,
     data = new Map<dynamic, dynamic>.from(data);
   else
     data = List.from(data);
-  RegExp regExp = RegExp(r"\[?(\-?[0-9]+)\]?");
-  if (regExp.hasMatch(keyPath[i])) {
-    keyPath[i] =
-        keyPath[i].toString().replaceAllMapped(regExp, (Match m) => "${m[1]}");
-  }
-  var currentPath;
-  if (isList) {
-    currentPath = int.tryParse(keyPath[i].toString()) ?? 0;
-    if (currentPath < 0 && data.isNotEmpty)
-      currentPath = data.length + currentPath;
-  } else
-    currentPath = keyPath[i];
+  keyPath[i] = _formatPath(keyPath[i]);
+  var currentPath = _getCurrentPath(isList, keyPath[i], data);
   try {
     data[currentPath] =
         updateDeeply(keyPath, data[currentPath], updater, notSetValue, ++i);
@@ -33,19 +42,9 @@ dynamic updateDeeply(List<dynamic> keyPath, dynamic data, Function updater,
 
 dynamic removeDeeply(List keyPath, dynamic data, [int i = 0]) {
   bool isList = data is List;
-  RegExp regExp = RegExp(r"\[?(\-?[0-9]+)\]?");
-  if (regExp.hasMatch(keyPath[i])) {
-    keyPath[i] =
-        keyPath[i].toString().replaceAllMapped(regExp, (Match m) => "${m[1]}");
-  }
-  var currentPath;
-  if (isList) {
-    data = List.from(data);
-    currentPath = int.tryParse(keyPath[i].toString()) ?? 0;
-    if (currentPath < 0 && data.isNotEmpty)
-      currentPath = data.length + currentPath;
-  } else
-    currentPath = keyPath[i];
+  keyPath[i] = _formatPath(keyPath[i]);
+  if (isList) data = List.from(data);
+  var currentPath = _getCurrentPath(isList, keyPath[i], data);
   if (data is Map) {
     data = Map.from(data);
     if (!data.containsKey(currentPath)) {
@@ -76,19 +75,9 @@ dynamic removeDeeply(List keyPath, dynamic data, [int i = 0]) {
 
 dynamic renameDeeply(List keyPath, dynamic newKey, dynamic data, [int i = 0]) {
   bool isList = data is List;
-  RegExp regExp = RegExp(r"\[?(\-?[0-9]+)\]?");
-  if (regExp.hasMatch(keyPath[i])) {
-    keyPath[i] =
-        keyPath[i].toString().replaceAllMapped(regExp, (Match m) => "${m[1]}");
-  }
-  var currentPath;
-  if (isList) {
-    data = List.from(data);
-    currentPath = int.tryParse(keyPath[i].toString()) ?? 0;
-    if (currentPath < 0 && data.isNotEmpty)
-      currentPath = data.length + currentPath;
-  } else
-    currentPath = keyPath[i];
+  keyPath[i] = _formatPath(keyPath[i]);
+  if (isList) data = List.from(data);
+  var currentPath = _getCurrentPath(isList, keyPath[i], data);
   if (data is Map) {
     data = Map.from(data);
     if (!data.containsKey(currentPath)) {

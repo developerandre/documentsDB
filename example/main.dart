@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:convert';
 
 import 'package:documentsdb/documentsdb.dart';
 
@@ -14,8 +13,7 @@ void main() async {
   final db =
       DocumentsDB(path + 'test.db', timestampData: true, inMemoryOnly: false);
   await db.open();
-  String str = "Hello world";
-  print(base64.encode(utf8.encode(str)));
+
   /**   Index field
    *    fieldNames is List of fields to index
    *    unique : if true verify if value of each field of List has unique value
@@ -44,27 +42,29 @@ void main() async {
     }
   });
 
-  //await db.removeIndex(['type']);
-  //print(await db.findOneAndRemove({'a': '5'}));
-  /* db.importFromFile([
-      {"_id": "5b78bdb6702de39b30e6f68b", "b": "6"},
-      {"_id": "5b78bdb6702de39b30e6f68c", "b": "6"},
-      {"_id": "5b78bdb6702de39b30e6f68d", "b": "6"},
-      {
-        "b": "10",
-        "_id": "5b77480133bd7f87d4030e15",
-        "o": {"sqdq": []}
-      }
-    ]); */
-  db.insert({'a': '6'}).then((data) {
-    print("insert 6 $data");
-  }).catchError((e) {
-    print("catchhhhhhhhhh insert 6$e");
+  /*
+      Listen insert,update,remove event
+    */
+  db.onUpdate.listen((data) {
+    //print('on update $data');
   });
-  db.findOneAndRemove({"type.at": "4"}).then((data) {
-    print("remove 7 $data");
+  db.onInsert.listen((data) {
+    //print('on onInsert $data');
+  });
+  db.onRemove.listen((data) {
+    //print('on onRemove $data');
+  });
+  db.watch().listen((data) {
+    //print('db changes without query $data');
+  });
+  db.watch({"a": "1"}).listen((data) {
+    //print('db changes with query $data');
+  });
+
+  db.insert({'a': '6'}).then((data) {
+    print("insert  $data");
   }).catchError((e) {
-    print("catchhhhhhhhhh insert 7 $e");
+    print("catch insert 6 $e");
   });
 
   db.insertMany([
@@ -81,17 +81,10 @@ void main() async {
       'type': {'at': '4'}
     }
   ]).then((data) {
-    print("insert $data");
+    print("insert many $data");
   }).catchError((e) {
-    print("catchhhhhhhhhh $e");
+    print("catch insertion many $e");
   });
-
-  /* db.watch().listen((data) {
-      if (data.isNotEmpty) print('without $data');
-    });
-    db.watch({"a": "1"}).listen((data) {
-      if (data.isNotEmpty) print('with query $data');
-    }); */
   db.update({
     "type.at": "4"
   }, {
@@ -99,75 +92,134 @@ void main() async {
   }, upsert: true).then((data) {
     print("update $data");
   }).catchError((e) {
-    print("catccccch $e");
+    print("catch with query `'type.at': '4'` $e");
   });
 
-  /*  await db.update({
+  db.findAndUpdate({
+    "type.at": "four"
+  }, {
+    'type': {'eee': 'four'}
+  }).then((count) {
+    print("update where type.at equals four : $count");
+  }).catchError((e) {
+    print("failed to update where type.at equals four $e");
+  });
+
+  db.findOneAndUpdate({
+    "type.at": "one"
+  }, {
+    'type': {'eee': '4'}
+  }).then((count) {
+    print("update where type.at equals one : $count");
+  }).catchError((e) {
+    print("failed to update where type.at equals one $e");
+  });
+
+  db.update({
     'type.at': '4'
   }, {
     Op.unset: {"type.at": true}
-  }, upsert: true); */
-
-  /*  db.onUpdate.listen((data) {
-    print('on update $data');
+  }, upsert: true).then((data) {
+    print("unset where type.at equals 4 : $data");
+  }).catchError((e) {
+    print("failed to unset where type.at equals 4 : $e");
   });
-  db.onInsert.listen((data) {
-    print('on onInsert $data');
-  });
-  db.onRemove.listen((data) {
-    print('on onRemove $data');
-  }); */
-  print((await db.find(
-    {
-      // Op.exists: {'e.c.d[0]': true, 'a': true}
-    },
-    projection: {'e': false, 'a': false},
-    /*  sort: {'e.c.d[0].dsqd': 1, 'a': 1},
-        skip: 2,
-        limit: 1 */
-  ))
-      .length);
-  /* var ids = await db.insertMany([
-      {'a': '1'},
-      {'a': '2'},
-      {'a': '3'},
-      {'a': '4'},
-    ]);
 
+  print(await db.remove({'a': RegExp('[3-6]')}));
+
+  print(await db.removeOne({'a': RegExp('[3-6]')}));
+
+  db.findOneAndRemove({"type.at": "4"}).then((count) {
+    print("findOneAndRemove where at = '4' $count");
+  }).catchError((e) {
+    print("failed to findOneAndRemove where at = '4': $e");
+  });
+
+  print(await db.find({
+    Op.exists: {'e.c.d[0]': true, 'a': true}
+  }, projection: {
+    'e': false,
+    'a': false
+  }, sort: {
+    'e.c.d[0].dsqd': 1,
+    'a': 1
+  }, skip: 2, limit: 1));
+
+  db.insertMany([
+    {'a': '1'},
+    {'a': '2'},
+    {'a': '3'},
+    {'a': '4'},
+  ]).then((ids) async {
+    print("ids = $ids");
     print(await db.find({'_id': ids[2]}));
+  }).catchError((e) {
+    print('failed to insert many a: $e');
+  });
 
-    print(await db.insert({'a': '5'}));
-    db.insert({'a': '6'});
-    db.insert({'a': '7'});
-    db.insert({'a': '8'});
-    db.insert({'a': '9'});
+  /* db.insert({'a': '6'});
+  db.insert({'a': '7'});
+  db.insert({'a': '8'});
+  db.insert({'a': '9'}); */
 
-    db.update({
-      Op.gt: {'a': '0'},
-      'a': RegExp('[4-7]'),
-    }, {
-      Op.max: {'n': 100},
-      'b': 'c'
-    });
+  db.update({
+    Op.gt: {'a': '0'},
+    'a': RegExp('[4-7]'),
+  }, {
+    Op.max: {'n': 100},
+    'b': 'c'
+  }).then((count) {
+    print("update to max where Op.gt $count");
+  }).catchError((e) {
+    print("failed to update to max where Op.gt $e");
+  });
 
-    db.update({
-      Op.gt: {'a': '0'},
-      'a': RegExp('[4-7]'),
-    }, {
-      Op.rename: {'b': 'ü'},
-      Op.unset: {'n': true},
-    });
+  db.update({
+    Op.gt: {'a': '0'},
+    'a': RegExp('[4-7]'),
+  }, {
+    Op.rename: {'b': 'ü'},
+    Op.unset: {'n': true},
+    Op.addToSet: {"script": 'dart', "year": "2018"},
+    Op.currentDate: {"year": true}
+  }).then((count) {
+    print("update where Op.gt $count");
+  }).catchError((e) {
+    print("failed to update where Op.gt $e");
+  });
 
-    //print((await db.remove({'a': RegExp('[3-6]')})));
+  print(await db.last({
+    Op.gt: {'a': 0},
+  }));
 
-    print(await db.last({
-      Op.gt: {'a': 0},
-    }));
+  print(await db.find({
+    Op.gt: {'a': 0},
+  }));
 
-    print(await db.find({
-      Op.gt: {'a': 0},
-    }));
- */
+  db.removeIndex(['type']);
+  print(await db.findOneAndRemove({'a': '5'}));
+  // count data where match query
+  print(await db.count({}));
+
+  /*
+  import data from File or Map
+   */
+  db.importFromFile([
+    {"_id": "5b78bdb6702de39b30e6f68b", "b": "6"},
+    {"_id": "5b78bdb6702de39b30e6f68c", "b": "12"},
+    {"_id": "5b78bdb6702de39b30e6f68d", "b": "script"},
+    {
+      "b": "102",
+      'type': {'at': 'title'},
+      "_id": "5b77480133bd7f87d4030e15",
+      "o": {"sqdq": []}
+    }
+  ]).then((data) {
+    print('import data');
+  }).catchError((e) {
+    print("failed to import data $e");
+  });
+
   await db.tidy();
   await db.close();
 }
